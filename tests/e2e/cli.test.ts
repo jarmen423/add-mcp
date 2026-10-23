@@ -75,6 +75,7 @@ function runCli(
   for (const key of [
     "COPILOT_HOME",
     "GROK_HOME",
+    "HERMES_HOME",
     "JUNIE_HOME",
     "KIMI_CODE_HOME",
     "PI_CODING_AGENT_DIR",
@@ -2689,6 +2690,169 @@ test("E2E CLI: Kimi global install falls back to ~/.kimi-code", () => {
   assert.strictEqual(server.transport, "stdio");
   assert.strictEqual(server.command, "npx");
   assert.deepStrictEqual(server.args, ["-y", "mcp-server-postgres"]);
+});
+
+test("E2E CLI: Factory Droid project install writes .factory/mcp.json", () => {
+  const projectDir = createTempDir();
+  const homeDir = createTempDir();
+
+  const result = runCli(
+    [
+      "https://mcp.example.com/mcp",
+      "-a",
+      "droid",
+      "-y",
+      "--name",
+      "droid-remote",
+      "--timeout",
+      "30000",
+    ],
+    projectDir,
+    homeDir,
+  );
+
+  if (result.status !== 0) {
+    throw new Error(
+      `CLI failed.\nSTDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`,
+    );
+  }
+
+  const saved = JSON.parse(
+    readFileSync(join(projectDir, ".factory", "mcp.json"), "utf-8"),
+  );
+  assert.deepStrictEqual(saved.mcpServers["droid-remote"], {
+    type: "http",
+    url: "https://mcp.example.com/mcp",
+    timeout: 30000,
+  });
+});
+
+test("E2E CLI: Hermes global install, list, and remove honor HERMES_HOME", () => {
+  const projectDir = createTempDir();
+  const homeDir = createTempDir();
+  const hermesHome = createTempDir();
+  const env = { HERMES_HOME: hermesHome };
+
+  const install = runCli(
+    ["https://mcp.example.com/mcp", "-a", "hermes", "-y", "--name", "remote"],
+    projectDir,
+    homeDir,
+    env,
+  );
+  if (install.status !== 0) {
+    throw new Error(
+      `CLI failed.\nSTDOUT:\n${install.stdout}\nSTDERR:\n${install.stderr}`,
+    );
+  }
+
+  const configPath = join(hermesHome, "config.yaml");
+  const saved = yaml.load(readFileSync(configPath, "utf-8")) as {
+    mcp_servers: Record<string, unknown>;
+  };
+  assert.deepStrictEqual(saved.mcp_servers.remote, {
+    url: "https://mcp.example.com/mcp",
+  });
+  assert.strictEqual(existsSync(join(homeDir, ".hermes")), false);
+
+  const list = runCli(["list", "-a", "hermes", "-g"], projectDir, homeDir, env);
+  assert.strictEqual(list.status, 0);
+  assert.match(list.stdout, /remote/);
+
+  const remove = runCli(
+    ["remove", "remote", "-a", "hermes", "-g", "-y"],
+    projectDir,
+    homeDir,
+    env,
+  );
+  assert.strictEqual(remove.status, 0);
+  const afterRemove = yaml.load(readFileSync(configPath, "utf-8")) as {
+    mcp_servers: Record<string, unknown>;
+  };
+  assert.deepStrictEqual(afterRemove.mcp_servers, {});
+});
+
+test("E2E CLI: Hermes expands a literal ~ in HERMES_HOME", () => {
+  const projectDir = createTempDir();
+  const homeDir = createTempDir();
+
+  const result = runCli(
+    ["https://mcp.example.com/mcp", "-a", "hermes", "-y", "--name", "remote"],
+    projectDir,
+    homeDir,
+    { HERMES_HOME: "~/.hermes-custom" },
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      `CLI failed.\nSTDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`,
+    );
+  }
+
+  assert.strictEqual(
+    existsSync(join(homeDir, ".hermes-custom", "config.yaml")),
+    true,
+  );
+  assert.strictEqual(existsSync(join(projectDir, "~")), false);
+});
+
+test("E2E CLI: an unreadable Hermes active_profile fails only the Hermes install", () => {
+  const projectDir = createTempDir();
+  const homeDir = createTempDir();
+  const hermesHome = createTempDir();
+  mkdirSync(join(hermesHome, "active_profile"));
+  const env = { HERMES_HOME: hermesHome };
+
+  const help = runCli(["--help"], projectDir, homeDir, env);
+  assert.strictEqual(help.status, 0);
+
+  const install = runCli(
+    [
+      "https://mcp.example.com/mcp",
+      "-a",
+      "hermes",
+      "-a",
+      "cursor",
+      "-g",
+      "-y",
+      "--name",
+      "remote",
+    ],
+    projectDir,
+    homeDir,
+    env,
+  );
+  assert.strictEqual(install.status, 1);
+  assert.match(
+    install.stdout + install.stderr,
+    /Could not read the Hermes profile selection at .*active_profile/,
+  );
+  assert.strictEqual(existsSync(join(homeDir, ".cursor", "mcp.json")), true);
+
+  mkdirSync(join(projectDir, ".cursor"));
+  writeFileSync(
+    join(projectDir, ".cursor", "mcp.json"),
+    JSON.stringify({
+      mcpServers: { keep: { url: "https://keep.example.com/mcp" } },
+    }),
+  );
+  for (const args of [
+    ["list", "-a", "cursor", "-a", "hermes"],
+    ["remove", "missing", "-a", "hermes", "-y"],
+  ]) {
+    const run = runCli(args, projectDir, homeDir, env);
+    assert.strictEqual(run.status, 1);
+    assert.doesNotMatch(run.stderr, /\n\s+at /);
+    assert.match(
+      run.stdout + run.stderr,
+      /Could not read the Hermes profile selection/,
+    );
+  }
+  const list = runCli(
+    ["list", "-a", "cursor", "-a", "hermes"],
+    projectDir,
+    homeDir,
+    env,
+  );
+  assert.match(list.stdout, /keep/);
 });
 
 test("E2E CLI: Junie global install honors JUNIE_HOME", () => {

@@ -8,11 +8,13 @@ export type AgentType =
   | "claude-desktop"
   | "codex"
   | "cursor"
+  | "factory-droid"
   | "fx"
   | "gemini-cli"
   | "goose"
   | "github-copilot-cli"
   | "grok-build"
+  | "hermes"
   | "junie"
   | "kilo-code"
   | "kimi-code"
@@ -29,9 +31,12 @@ export const agentAliases: Record<string, AgentType> = {
   "cline-vscode": "cline",
   codeium: "windsurf",
   cascade: "windsurf",
+  droid: "factory-droid",
+  factory: "factory-droid",
   gemini: "gemini-cli",
   "github-copilot": "vscode",
   grok: "grok-build",
+  "hermes-agent": "hermes",
   kilo: "kilo-code",
   kilocode: "kilo-code",
   kimi: "kimi-code",
@@ -40,7 +45,8 @@ export const agentAliases: Record<string, AgentType> = {
   "pi-agent": "pi",
 };
 
-export type ConfigFormat = "json" | "yaml" | "toml";
+/** `yaml` is YAML 1.2; `yaml-1.1` is for agents whose parser reads `on`, `off`, and `0123` the YAML 1.1 way. */
+export type ConfigFormat = "json" | "yaml" | "yaml-1.1" | "toml";
 
 export interface AgentConfig {
   /** Internal name */

@@ -173,20 +173,21 @@ function readServersForAgentSafe(
   agentType: AgentType,
   options: { scope: "local" | "global"; cwd?: string },
 ): AgentServers {
+  const agent = agents[agentType];
+  let configPath = "";
   try {
-    return readServersForAgent(agentType, options);
-  } catch (error) {
-    const agent = agents[agentType];
-    const installOptions: InstallOptions = {
+    configPath = getConfigPath(agent, {
       local: options.scope === "local",
       cwd: options.cwd,
-    };
+    });
+    return readServersForAgent(agentType, options);
+  } catch (error) {
     return {
       agentType,
       displayName: agent.displayName,
       detected: true,
       scope: options.scope,
-      configPath: getConfigPath(agent, installOptions),
+      configPath,
       servers: [],
       error: error instanceof Error ? error.message : String(error),
     };
@@ -222,17 +223,27 @@ export async function listInstalledServers(options: {
         );
       } else {
         const agent = agents[agentType];
-        const installOptions: InstallOptions = {
-          local: scope === "local",
-          cwd: options.cwd,
-        };
+        let configPath = "";
+        let error: string | undefined;
+        try {
+          configPath = getConfigPath(agent, {
+            local: scope === "local",
+            cwd: options.cwd,
+          });
+        } catch (resolveError) {
+          error =
+            resolveError instanceof Error
+              ? resolveError.message
+              : String(resolveError);
+        }
         results.push({
           agentType,
           displayName: agent.displayName,
           detected: false,
           scope,
-          configPath: getConfigPath(agent, installOptions),
+          configPath,
           servers: [],
+          ...(error ? { error } : {}),
         });
       }
     }

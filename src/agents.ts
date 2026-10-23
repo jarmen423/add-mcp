@@ -1,6 +1,6 @@
 import * as p from "@clack/prompts";
 import { homedir } from "os";
-import { dirname, join } from "path";
+import { basename, dirname, join } from "path";
 import { existsSync, readFileSync } from "fs";
 import * as jsonc from "jsonc-parser";
 import type { AgentConfig, AgentType, McpServerConfig } from "./types.js";
@@ -26,6 +26,72 @@ function getKimiCodeHome(): string {
 /** The JetBrains IDE plugin always reads `~/.junie`; only Junie CLI honors `JUNIE_HOME`. */
 function getJunieHome(): string {
   return process.env.JUNIE_HOME || join(home, ".junie");
+}
+
+/** Hermes expands `~` and environment references in `HERMES_HOME` before using it. */
+function expandHermesHome(raw: string): string {
+  const expanded = raw.replace(
+    /\$(\w+)|\$\{(\w+)\}|%(\w+)%/g,
+    (match, bare?: string, braced?: string, percent?: string) => {
+      if (percent && process.platform !== "win32") {
+        return match;
+      }
+      return process.env[bare ?? braced ?? percent ?? ""] ?? match;
+    },
+  );
+  return expanded === "~" || /^~[\\/]/.test(expanded)
+    ? join(home, expanded.slice(1))
+    : expanded;
+}
+
+/** Hermes reads `$HERMES_HOME`, else `~/.hermes` (`%LOCALAPPDATA%\hermes` on Windows). */
+function getHermesRoot(): string {
+  if (process.env.HERMES_HOME?.trim()) {
+    return expandHermesHome(process.env.HERMES_HOME.trim());
+  }
+  if (process.platform === "win32") {
+    return join(
+      process.env.LOCALAPPDATA || join(home, "AppData", "Local"),
+      "hermes",
+    );
+  }
+  return join(home, ".hermes");
+}
+
+/** Hermes stores profiles lowercase and accepts only these names (`PROFILE_ID_RE`). */
+const HERMES_PROFILE_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+/**
+ * Unless the root is itself a profile, the `hermes` CLI switches to the
+ * profile named in `active_profile`, stored under `profiles/<name>`.
+ */
+function getHermesHome(): string {
+  const root = getHermesRoot();
+  const activeProfilePath = join(root, "active_profile");
+  if (
+    basename(dirname(root)) === "profiles" ||
+    !existsSync(activeProfilePath)
+  ) {
+    return root;
+  }
+  let activeProfile: string;
+  try {
+    activeProfile = readFileSync(activeProfilePath, "utf-8").trim();
+  } catch (error) {
+    throw new Error(
+      `Could not read the Hermes profile selection at ${activeProfilePath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const profile = activeProfile.toLowerCase();
+  if (!profile || profile === "default") {
+    return root;
+  }
+  if (!HERMES_PROFILE_NAME.test(profile)) {
+    throw new Error(
+      `The Hermes profile selection at ${activeProfilePath} names "${activeProfile}", which is not a valid profile name.`,
+    );
+  }
+  return join(root, "profiles", profile);
 }
 
 function getMastraCodeDir(): string {
@@ -465,6 +531,58 @@ function transformJunieConfig(
     remote.headers = config.headers;
   }
   return remote;
+}
+
+/**
+ * Factory Droid takes an explicit `type` (`stdio`, `http`, or `sse`) and a
+ * per-tool-call `timeout` in milliseconds.
+ * See https://docs.factory.ai/cli/configuration/mcp.
+ */
+function transformFactoryDroidConfig(
+  _serverName: string,
+  config: McpServerConfig,
+): unknown {
+  if (config.url) {
+    return {
+      ...buildStandardRemote(config),
+      type: config.type === "sse" ? "sse" : "http",
+    };
+  }
+  const local: Record<string, unknown> = {
+    type: "stdio",
+    ...buildStandardLocal(config),
+  };
+  if (typeof config.timeout === "number") {
+    local.timeout = config.timeout;
+  }
+  return local;
+}
+
+/**
+ * Hermes connects to `url` over Streamable HTTP unless `transport: sse` is set,
+ * and takes a per-tool-call `timeout` in seconds.
+ * See https://hermes-agent.nousresearch.com/docs/reference/mcp-config-reference.
+ */
+function transformHermesConfig(
+  _serverName: string,
+  config: McpServerConfig,
+): unknown {
+  let entry: Record<string, unknown>;
+  if (config.url) {
+    entry = { url: config.url };
+    if (config.headers && Object.keys(config.headers).length > 0) {
+      entry.headers = config.headers;
+    }
+    if (config.type === "sse") {
+      entry.transport = "sse";
+    }
+  } else {
+    entry = buildStandardLocal(config);
+  }
+  if (typeof config.timeout === "number") {
+    entry.timeout = config.timeout / 1000;
+  }
+  return entry;
 }
 
 /**
@@ -1020,6 +1138,22 @@ export const agents: Record<AgentType, AgentConfig> = {
     transformConfig: transformCursorConfig,
   },
 
+  "factory-droid": {
+    name: "factory-droid",
+    displayName: "Factory Droid",
+    configPath: join(home, ".factory", "mcp.json"),
+    localConfigPath: ".factory/mcp.json",
+    projectDetectPaths: [".factory"],
+    configKey: "mcpServers",
+    format: "json",
+    supportedTransports: ["stdio", "http", "sse"],
+    supportedFields: ["timeout"],
+    detectGlobalInstall: async () => {
+      return existsSync(join(home, ".factory"));
+    },
+    transformConfig: transformFactoryDroidConfig,
+  },
+
   fx: {
     name: "fx",
     displayName: "fx",
@@ -1100,6 +1234,22 @@ export const agents: Record<AgentType, AgentConfig> = {
     },
     resolveConfigPath: resolveGrokBuildConfigPath,
     transformConfig: transformGrokBuildConfig,
+  },
+
+  hermes: {
+    name: "hermes",
+    displayName: "Hermes Agent",
+    configPath: join(getHermesRoot(), "config.yaml"),
+    projectDetectPaths: [],
+    configKey: "mcp_servers",
+    format: "yaml-1.1",
+    supportedTransports: ["stdio", "http", "sse"],
+    supportedFields: ["timeout"],
+    detectGlobalInstall: async () => {
+      return existsSync(getHermesRoot());
+    },
+    resolveConfigPath: () => join(getHermesHome(), "config.yaml"),
+    transformConfig: transformHermesConfig,
   },
 
   junie: {

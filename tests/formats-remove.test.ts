@@ -13,7 +13,11 @@ import { join } from "node:path";
 import * as jsonc from "jsonc-parser";
 import yaml from "js-yaml";
 import * as TOML from "@iarna/toml";
-import { removeServerFromConfig } from "../src/formats/index.js";
+import {
+  readConfig,
+  removeServerFromConfig,
+  writeConfig,
+} from "../src/formats/index.js";
 
 let passed = 0;
 let failed = 0;
@@ -175,6 +179,103 @@ test("YAML: removes server key from nested config", () => {
   const extensions = parsed.extensions as Record<string, unknown>;
   assert.strictEqual(extensions.neon, undefined);
   assert.ok(extensions.github);
+});
+
+test("removeServerFromConfig - YAML refuses aliased and merged server maps", () => {
+  for (const original of [
+    "shared: &servers\n  drop:\n    cmd: b\nextensions: *servers\n",
+    "shared: &servers\n  drop:\n    cmd: b\nextensions:\n  <<: *servers\n",
+    "defaults: &defaults\n  extensions:\n    drop:\n      cmd: b\n<<: *defaults\n",
+  ]) {
+    const filePath = join(createTempDir(), "config.yaml");
+    writeFileSync(filePath, original);
+
+    assert.throws(
+      () => removeServerFromConfig(filePath, "yaml", "extensions", "drop"),
+      /YAML alias or merge key/,
+    );
+    assert.strictEqual(readFileSync(filePath, "utf-8"), original);
+  }
+});
+
+test("writeConfig - YAML leaves existing values as written", () => {
+  const filePath = join(createTempDir(), "config.yaml");
+  writeFileSync(
+    filePath,
+    "extensions:\n  existing:\n    args: [server.js, yes]\n    envs:\n      FEATURE: off\n",
+  );
+
+  writeConfig(
+    filePath,
+    { extensions: { added: { envs: { MODE: "on" } } } },
+    "yaml",
+    "extensions",
+  );
+
+  const content = readFileSync(filePath, "utf-8");
+  assert.match(
+    content,
+    /args: \[ server\.js, yes \]|args: \[server\.js, yes\]/,
+  );
+  assert.match(content, /FEATURE: off/);
+  assert.match(content, /MODE: on/);
+  assert.deepStrictEqual(readConfig(filePath, "yaml"), {
+    extensions: {
+      existing: { args: ["server.js", "yes"], envs: { FEATURE: "off" } },
+      added: { envs: { MODE: "on" } },
+    },
+  });
+});
+
+test("writeConfig and removeServerFromConfig - YAML keep CRLF line endings", () => {
+  for (const format of ["yaml", "yaml-1.1"] as const) {
+    const filePath = join(createTempDir(), "config.yaml");
+    writeFileSync(filePath, "# top\r\nmcp_servers: {}\r\nmodel: x\r\n");
+
+    writeConfig(
+      filePath,
+      { mcp_servers: { remote: { url: "https://mcp.example.com/mcp" } } },
+      format,
+      "mcp_servers",
+    );
+    assert.strictEqual(
+      readFileSync(filePath, "utf-8"),
+      "# top\r\nmcp_servers:\r\n  remote:\r\n    url: https://mcp.example.com/mcp\r\nmodel: x\r\n",
+    );
+
+    removeServerFromConfig(filePath, format, "mcp_servers", "remote");
+    assert.strictEqual(
+      readFileSync(filePath, "utf-8"),
+      "# top\r\nmcp_servers: {}\r\nmodel: x\r\n",
+    );
+  }
+});
+
+test("removeServerFromConfig - YAML keeps comments", () => {
+  const dir = createTempDir();
+  const filePath = join(dir, "config.yaml");
+  writeFileSync(
+    filePath,
+    [
+      "# top comment",
+      "mcp_servers:",
+      "  keep: # stays",
+      "    url: https://keep.example.com/mcp",
+      "  drop:",
+      "    url: https://drop.example.com/mcp",
+      "",
+    ].join("\n"),
+  );
+
+  removeServerFromConfig(filePath, "yaml", "mcp_servers", "drop");
+
+  const content = readFileSync(filePath, "utf-8");
+  assert.match(content, /^# top comment$/m);
+  assert.match(content, /# stays/);
+  const parsed = yaml.load(content) as Record<string, unknown>;
+  assert.deepStrictEqual(parsed.mcp_servers, {
+    keep: { url: "https://keep.example.com/mcp" },
+  });
 });
 
 test("YAML: no-op on nonexistent file", () => {
