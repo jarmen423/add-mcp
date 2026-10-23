@@ -62,18 +62,31 @@ function runCli(
   homeDir: string,
   extraEnv: NodeJS.ProcessEnv = {},
 ) {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: homeDir,
+    XDG_CONFIG_HOME: join(homeDir, ".config"),
+    CODEX_HOME: join(homeDir, ".codex"),
+    NO_COLOR: "1",
+    ...extraEnv,
+  };
+  // Drop host agent-home overrides unless a test sets them explicitly, so a
+  // developer machine (or Junie itself via JUNIE_HOME) cannot leak into e2e.
+  for (const key of [
+    "COPILOT_HOME",
+    "GROK_HOME",
+    "JUNIE_HOME",
+    "KIMI_CODE_HOME",
+    "PI_CODING_AGENT_DIR",
+  ] as const) {
+    if (!(key in extraEnv)) {
+      delete env[key];
+    }
+  }
   return spawnSync(tsxBin, [indexPath, ...args], {
     cwd,
     encoding: "utf-8",
-    env: {
-      ...process.env,
-      COPILOT_HOME: undefined,
-      HOME: homeDir,
-      XDG_CONFIG_HOME: join(homeDir, ".config"),
-      CODEX_HOME: join(homeDir, ".codex"),
-      NO_COLOR: "1",
-      ...extraEnv,
-    },
+    env,
   });
 }
 
@@ -2674,6 +2687,71 @@ test("E2E CLI: Kimi global install falls back to ~/.kimi-code", () => {
   const server = saved.mcpServers["kimi-local"] as Record<string, unknown>;
   assert.ok(server);
   assert.strictEqual(server.transport, "stdio");
+  assert.strictEqual(server.command, "npx");
+  assert.deepStrictEqual(server.args, ["-y", "mcp-server-postgres"]);
+});
+
+test("E2E CLI: Junie global install honors JUNIE_HOME", () => {
+  const projectDir = createTempDir();
+  const homeDir = createTempDir();
+  const junieHome = createTempDir();
+
+  const result = runCli(
+    [
+      "https://mcp.example.com/mcp",
+      "-a",
+      "junie",
+      "-g",
+      "-y",
+      "--name",
+      "junie-remote",
+    ],
+    projectDir,
+    homeDir,
+    { JUNIE_HOME: junieHome },
+  );
+
+  if (result.status !== 0) {
+    throw new Error(
+      `CLI failed.\nSTDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`,
+    );
+  }
+
+  const configPath = join(junieHome, "mcp", "mcp.json");
+  assert.strictEqual(existsSync(configPath), true);
+  assert.strictEqual(
+    existsSync(join(homeDir, ".junie", "mcp", "mcp.json")),
+    false,
+  );
+
+  const saved = JSON.parse(readFileSync(configPath, "utf-8"));
+  const server = saved.mcpServers["junie-remote"] as Record<string, unknown>;
+  assert.ok(server);
+  assert.strictEqual(server.url, "https://mcp.example.com/mcp");
+});
+
+test("E2E CLI: Junie project install writes a stdio server to .junie/mcp/mcp.json", () => {
+  const projectDir = createTempDir();
+  const homeDir = createTempDir();
+
+  const result = runCli(
+    ["mcp-server-postgres", "-a", "junie", "-y", "--name", "junie-local"],
+    projectDir,
+    homeDir,
+  );
+
+  if (result.status !== 0) {
+    throw new Error(
+      `CLI failed.\nSTDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`,
+    );
+  }
+
+  const configPath = join(projectDir, ".junie", "mcp", "mcp.json");
+  assert.strictEqual(existsSync(configPath), true);
+
+  const saved = JSON.parse(readFileSync(configPath, "utf-8"));
+  const server = saved.mcpServers["junie-local"] as Record<string, unknown>;
+  assert.ok(server);
   assert.strictEqual(server.command, "npx");
   assert.deepStrictEqual(server.args, ["-y", "mcp-server-postgres"]);
 });

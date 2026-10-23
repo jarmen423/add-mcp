@@ -23,6 +23,11 @@ function getKimiCodeHome(): string {
   return process.env.KIMI_CODE_HOME || join(home, ".kimi-code");
 }
 
+/** The JetBrains IDE plugin always reads `~/.junie`; only Junie CLI honors `JUNIE_HOME`. */
+function getJunieHome(): string {
+  return process.env.JUNIE_HOME || join(home, ".junie");
+}
+
 function getMastraCodeDir(): string {
   return join(home, ".mastracode");
 }
@@ -443,6 +448,51 @@ function transformKiroCliConfig(
   return remoteConfig;
 }
 
+const JUNIE_SERVER_NAME = /^[a-zA-Z0-9_-]+$/;
+const JUNIE_MIN_TIMEOUT_MS = 1_000;
+const JUNIE_MAX_TIMEOUT_MS = 3_600_000;
+
+/**
+ * Junie (Junie CLI and the JetBrains IDE plugin) infers a server's transport
+ * from `command` vs `url`, so no `type` is emitted. Junie rejects server names
+ * outside `[a-zA-Z0-9_-]`, and ignores a `timeout` outside 1s–1h in favor of
+ * its 60-second default, so both fail the install instead.
+ * See https://junie.jetbrains.com/docs/junie-cli-mcp-configuration.html.
+ */
+function transformJunieConfig(
+  serverName: string,
+  config: McpServerConfig,
+): unknown {
+  if (!JUNIE_SERVER_NAME.test(serverName)) {
+    throw new Error(
+      `Junie server names may only contain letters, digits, "_", and "-". Pick another name with --name instead of "${serverName}".`,
+    );
+  }
+  const timeout = config.timeout;
+  if (
+    typeof timeout === "number" &&
+    (timeout < JUNIE_MIN_TIMEOUT_MS || timeout > JUNIE_MAX_TIMEOUT_MS)
+  ) {
+    throw new Error(
+      `Junie accepts a timeout between ${JUNIE_MIN_TIMEOUT_MS} and ${JUNIE_MAX_TIMEOUT_MS} milliseconds, got ${timeout}.`,
+    );
+  }
+
+  let entry: Record<string, unknown>;
+  if (config.url) {
+    entry = { url: config.url };
+    if (config.headers && Object.keys(config.headers).length > 0) {
+      entry.headers = config.headers;
+    }
+  } else {
+    entry = buildStandardLocal(config);
+  }
+  if (typeof timeout === "number") {
+    entry.timeout = timeout;
+  }
+  return entry;
+}
+
 /**
  * Pi has no native MCP. pi-mcp-adapter infers transport from `command` vs
  * `url` and names a per-request timeout `requestTimeoutMs`.
@@ -829,6 +879,17 @@ function resolveKimiCodeConfigPath(
   return join(getKimiCodeHome(), "mcp.json");
 }
 
+function resolveJunieConfigPath(
+  agent: AgentConfig,
+  options: { local: boolean; cwd: string },
+): string {
+  if (options.local && agent.localConfigPath) {
+    return join(options.cwd, agent.localConfigPath);
+  }
+
+  return join(getJunieHome(), "mcp", "mcp.json");
+}
+
 function resolvePiConfigPath(
   agent: AgentConfig,
   options: { local: boolean; cwd: string },
@@ -1065,6 +1126,23 @@ export const agents: Record<AgentType, AgentConfig> = {
     },
     resolveConfigPath: resolveGrokBuildConfigPath,
     transformConfig: transformGrokBuildConfig,
+  },
+
+  junie: {
+    name: "junie",
+    displayName: "Junie",
+    configPath: join(getJunieHome(), "mcp", "mcp.json"),
+    localConfigPath: ".junie/mcp/mcp.json",
+    projectDetectPaths: [".junie"],
+    configKey: "mcpServers",
+    format: "json",
+    supportedTransports: ["stdio", "http", "sse"],
+    supportedFields: ["timeout"],
+    detectGlobalInstall: async () => {
+      return existsSync(getJunieHome());
+    },
+    resolveConfigPath: resolveJunieConfigPath,
+    transformConfig: transformJunieConfig,
   },
 
   "kilo-code": {

@@ -19,6 +19,7 @@ MCP servers can be installed to any of these agents. Project paths are relative 
 | Goose                  | `goose`              | `.goose/config.yaml`                                                          | `~/.config/goose/config.yaml`                                                                                   |
 | GitHub Copilot CLI     | `github-copilot-cli` | `.mcp.json` (or existing `.github/mcp.json`)                                  | `$COPILOT_HOME/mcp-config.json` (defaults to `~/.copilot/mcp-config.json`)                                      |
 | Grok Build             | `grok-build`         | `.grok/config.toml`                                                           | `$GROK_HOME/config.toml` (defaults to `~/.grok/config.toml`)                                                    |
+| Junie                  | `junie`              | `.junie/mcp/mcp.json`                                                         | `$JUNIE_HOME/mcp/mcp.json` (defaults to `~/.junie/mcp/mcp.json`, which the Junie JetBrains IDE plugin reads)    |
 | Kilo Code              | `kilo-code`          | `kilo.json` (or existing `.kilo/`, `.kilocode/`, or root `kilo.jsonc` config) | `~/.config/kilo/kilo.json` (or existing `~/.config/kilo/kilo.jsonc`)                                            |
 | Kimi Code              | `kimi-code`          | `.kimi-code/mcp.json`                                                         | `$KIMI_CODE_HOME/mcp.json` (defaults to `~/.kimi-code/mcp.json`)                                                |
 | Kiro CLI               | `kiro-cli`           | `.kiro/settings/mcp.json`                                                     | `~/.kiro/settings/mcp.json` (shared with the Kiro IDE)                                                          |
@@ -54,6 +55,8 @@ Kimi Code only loads a project-level `.kimi-code/mcp.json` after you trust the f
 Mastra Code also reads project `.mcp.json`. add-mcp writes `.mastracode/mcp.json` (and `~/.mastracode/mcp.json` globally) so a mixed Claude + Mastra install does not share that file.
 
 Pi has no built-in MCP. add-mcp writes the Pi-owned files [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) reads. Install that extension with `pi install npm:pi-mcp-adapter`. A running Pi session picks the change up after `/reload`.
+
+Junie CLI and the Junie JetBrains IDE plugin read the same `mcp.json`. The IDE plugin always reads `~/.junie/mcp/mcp.json`, so it only sees a global install when `JUNIE_HOME` is unset. Junie rejects server names outside `[a-zA-Z0-9_-]`, so add-mcp refuses them; pick another with `--name`. Junie CLI sends an `Authorization` header from the config; the IDE plugin does not support tokens in MCP configs.
 
 fx reads MCP servers only from `~/.fx/mcp.json`. A project file cannot add a server. A running session applies the change with `/mcp reload`.
 
